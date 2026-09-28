@@ -1,0 +1,18 @@
+# ── Core Framework ──────────────────────────────────────────────────────────────
+streamlit>=1.35.0          # Frontend UI framework
+pydantic>=2.7.0            # Data validation and settings management
+pydantic-settings>=2.3.0   # Pydantic-based settings with env support
+
+# ── Database ─────────────────────────────────────────────────────────────────────
+# SQLite is bundled with Python standard library (no extra install needed)
+
+# ── NLP Engines ──────────────────────────────────────────────────────────────────
+janome>=0.5.0              # Japanese morphological analyzer (fully offline)
+
+# ── Export / Utilities ────────────────────────────────────────────────────────────
+pandas>=2.2.0              # Data manipulation for export (Anki TSV/CSV, JSON)
+openpyxl>=3.1.0            # Excel export support (optional Anki format)
+
+# ── Testing ───────────────────────────────────────────────────────────────────────
+pytest>=8.2.0              # Test runner
+pytest-cov>=5.0.0          # Coverage reporting

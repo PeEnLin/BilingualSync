@@ -1,0 +1,32 @@
+# Python 暫存與快取
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# 虛擬環境
+venv/
+.venv/
+env/
+ENV/
+
+# 影音測試檔案與下載暫存
+*.mp4
+*.mp3
+*.wav
+*.m4a
+downloads/
+temp/
+
+# 模型快取資料夾
+models/
+.cache/
+
+# 系統與 IDE 設定檔
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.db
+*.db
