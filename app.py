@@ -1,28 +1,29 @@
 """
 app.py
 ~~~~~~
-BilingualSync – Streamlit 雙語字幕學習助理
+BilingualSync – Streamlit Bilingual Subtitle Learning Assistant
 
-啟動方式::
+Run with:
 
     streamlit run app.py
 
-功能架構
---------
+Feature Structure
+-----------------
 Sidebar
-  ├─ 字幕上傳（日文 / 中文 .srt）
-  ├─ 解析並對齊字幕
-  └─ 單字庫面板（Vocabulary Vault）
-       ├─ 單字總數
-       ├─ 搜尋
-       ├─ 單字清單（卡片式）
-       └─ 匯出 Anki TSV
+  ├─ Language Selector (繁體中文 / English)
+  ├─ Video ASR & Translation (Whisper + Fallback Chain)
+  ├─ Subtitle Upload (Japanese / Chinese .srt)
+  └─ Vocabulary Vault
+       ├─ Word Count
+       ├─ Search
+       ├─ Vocabulary Cards
+       └─ Export Anki TSV
 
 Main Area
-  ├─ Empty State（未上傳時）
-  └─ 雙語對照閱讀器
-       ├─ 左欄：日文句（分詞 Tags，點擊加入單字庫）
-       └─ 右欄：中文句
+  ├─ Empty State (before upload)
+  └─ Bilingual Subtitle Reader
+       ├─ Left Column: Japanese Sentences (Token Chips, click to add to vocabulary)
+       └─ Right Column: Chinese Sentences
 """
 
 from __future__ import annotations
@@ -36,15 +37,182 @@ from typing import Optional
 import streamlit as st
 
 # ─────────────────────────────────────────────────────────────────────────────
+# i18n Translation Dictionary
+# ─────────────────────────────────────────────────────────────────────────────
+TRANSLATIONS: dict[str, dict[str, str]] = {
+    "繁體中文": {
+        "page_title": "BilingualSync - 雙語字幕對照閱讀器",
+        "title": "🎬 雙語字幕對照閱讀器",
+        "sidebar_lang_label": "🌐 介面語言 / Language",
+        "sidebar_header": "影片處理與控制台",
+        "upload_label": "上傳影音檔案 (MP4, MKV, WebM, MP3, WAV)",
+        "upload_help": "請上傳欲進行字幕生成與單字分析的影音檔",
+        "legend_tip": "點擊日文詞彙即可加入單字庫・顏色代表詞性：",
+        "pos_verb": "動詞",
+        "pos_noun": "名詞",
+        "pos_adj": "形容詞",
+        "pos_na_adj": "形容動詞",
+        "pos_adv": "副詞",
+        "extracting_audio": "正在抽取音訊 (FFmpeg)...",
+        "transcribing": "正在進行語音轉錄 (Whisper ASR)...",
+        "transcribe_complete": "轉錄完成！共 {count} 句字幕",
+        "translating": "正在進行中文語意對齊翻譯...",
+        "unit_segments": "句",
+        "btn_export_srt": "匯出雙語 SRT",
+        "btn_export_vocab": "匯出單字本",
+        "no_data_hint": "請先上傳影片以開始辨識與學習",
+        "about_app": "# BilingualSync\n雙語字幕驅動的日文單字學習系統",
+        "brand_subtitle": "BILINGUAL SUBTITLE LEARNING",
+        "video_asr_caption": "透過離線語音聽打與機器翻譯，直接產出雙語字幕",
+        "model_select_label": "Whisper 模型精度",
+        "model_opt_high": "高精確度",
+        "model_opt_fast": "較快",
+        "model_select_help": "medium 模型具備最高日語識別率 (建議)；small 模型運算較快",
+        "btn_start_transcribe": "🚀 開始深度辨識與翻譯",
+        "warn_no_speech": "語音中未識別出有效語句，請確認音訊是否包含清楚日語。",
+        "err_transcribe": "辨識處理失敗",
+        "srt_section_header": "📂 既有雙語 SRT 字幕上傳",
+        "ja_sub_label": "🇯🇵 日文字幕 (.srt)",
+        "ja_sub_help": "上傳日文原版字幕檔（.srt 格式）",
+        "zh_sub_label": "🇹🇼 中文字幕 (.srt)",
+        "zh_sub_help": "上傳中文翻譯字幕檔（.srt 格式）",
+        "btn_parse_align": "🔍 解析並對齊字幕",
+        "parse_spinner": "解析字幕中，請稍候…",
+        "parse_error_msg": "解析失敗",
+        "parse_success_msg": "成功對齊 {count} 個字幕句對！",
+        "btn_auto_translate": "🌐 自動翻譯繁中 (純日文 SRT)",
+        "auto_translate_help": "若僅有日文字幕檔，一鍵自動逐句翻譯為繁體中文並對齊雙語字幕",
+        "auto_translate_spinner": "🌐 正在自動翻譯繁體中文，請稍候…",
+        "auto_translate_error_msg": "翻譯失敗",
+        "auto_translate_success_msg": "成功翻譯並生成 {count} 個繁中對應字幕句對！",
+        "empty_ja_srt_error": "日文字幕檔案內容為空或無法解析有效的字幕區塊。",
+        "vocab_vault_header": "📚 單字庫面板 (Vocabulary Vault)",
+        "unit_words": "個單字",
+        "vocab_search_placeholder": "輸入詞彙、原形或翻譯…",
+        "vocab_empty_hint": "尚未收錄任何單字。<br>點擊日文字幕中的詞彙即可加入！",
+        "vocab_base_form": "原型：",
+        "vocab_reading": "讀音（片假名）：",
+        "vocab_context_sentence": "所屬例句",
+        "vocab_delete_tooltip": "刪除「{word}」",
+        "vocab_deleted_toast": "已從單字庫刪除：{word}",
+        "vocab_showing_count": "顯示前 {shown} 筆，共 {total} 筆結果",
+        "btn_clear_all_vocab": "🗑️ 清空所有單字",
+        "clear_all_vocab_help": "清空單字庫內所有單字",
+        "clear_all_vocab_warning": "⚠️ 確定要清空所有單字嗎？此動作無法復原！",
+        "btn_confirm_clear": "⚠️ 確認清空",
+        "btn_cancel": "取消",
+        "vocab_cleared_toast": "已清空所有單字庫資料！",
+        "btn_export_anki": "⬇️  匯出 Anki (.tsv)",
+        "export_anki_help": "下載 Anki 匯入格式（Tab 分隔，UTF-8 BOM）",
+        "export_anki_disabled_help": "尚無單字可匯出",
+        "export_anki_tip": "💡 提示：匯出的 .tsv 檔符合 Anki 欄位標準，開啟 Anki 點選「匯入檔案」即可直接生成單字牌組。",
+        "empty_welcome_title": "歡迎使用 BilingualSync",
+        "empty_welcome_desc": "請在左側側邊欄上傳<strong>日文</strong>與<strong>中文</strong>字幕檔，<br>或直接上傳影片檔案進行語音辨識與翻譯，即可開始互動學習。",
+        "feature1_title": "智慧字幕對齊",
+        "feature1_desc": "滑動視窗時間戳重疊演算法<br>自動匹配雙語句對",
+        "feature2_title": "一鍵加入單字庫",
+        "feature2_desc": "點擊任意日文詞彙<br>自動解析原形、讀音與詞性",
+        "feature3_title": "Anki 匯出",
+        "feature3_desc": "完整例句上下文<br>一鍵匯出 TSV 單字卡",
+        "label_base": "原形",
+        "no_matching_zh": "（無對應中文字幕）",
+        "toast_added_vocab": "加入單字庫：**{word}**",
+        "toast_save_failed": "儲存失敗：{err}",
+    },
+    "English": {
+        "page_title": "BilingualSync - Bilingual Subtitle Reader",
+        "title": "🎬 Bilingual Subtitle Reader",
+        "sidebar_lang_label": "🌐 Interface Language / 語言",
+        "sidebar_header": "Video Processing & Control",
+        "upload_label": "Upload Media File (MP4, MKV, WebM, MP3, WAV)",
+        "upload_help": "Upload a media file for subtitle transcription and token analysis",
+        "legend_tip": "Click any Japanese token to save to vocabulary. Colors indicate POS:",
+        "pos_verb": "Verb",
+        "pos_noun": "Noun",
+        "pos_adj": "Adj",
+        "pos_na_adj": "Na-Adj",
+        "pos_adv": "Adv",
+        "extracting_audio": "Extracting audio (FFmpeg)...",
+        "transcribing": "Transcribing audio with Whisper ASR...",
+        "transcribe_complete": "Transcription complete: {count} segments",
+        "translating": "Aligning and translating sentences...",
+        "unit_segments": "segments",
+        "btn_export_srt": "Export Bilingual SRT",
+        "btn_export_vocab": "Export Vocab List",
+        "no_data_hint": "Please upload a video file to start transcription",
+        "about_app": "# BilingualSync\nBilingual Subtitle Japanese Vocabulary Learning Assistant",
+        "brand_subtitle": "BILINGUAL SUBTITLE LEARNING",
+        "video_asr_caption": "Offline speech-to-text & machine translation for bilingual subtitles",
+        "model_select_label": "Whisper Model Size",
+        "model_opt_high": "High accuracy",
+        "model_opt_fast": "Faster",
+        "model_select_help": "medium offers the highest Japanese accuracy (recommended); small is faster",
+        "btn_start_transcribe": "🚀 Start Transcription & Translation",
+        "warn_no_speech": "No valid speech detected in the audio. Please ensure clear Japanese audio.",
+        "err_transcribe": "Transcription failed",
+        "srt_section_header": "📂 Upload Subtitle Files (.srt)",
+        "ja_sub_label": "🇯🇵 Japanese Subtitles (.srt)",
+        "ja_sub_help": "Upload original Japanese subtitle file (.srt format)",
+        "zh_sub_label": "🇹🇼 Chinese Subtitles (.srt)",
+        "zh_sub_help": "Upload Chinese translated subtitle file (.srt format)",
+        "btn_parse_align": "🔍 Parse & Align Subtitles",
+        "parse_spinner": "Parsing subtitles, please wait…",
+        "parse_error_msg": "Parsing failed",
+        "parse_success_msg": "Successfully aligned {count} subtitle segments!",
+        "btn_auto_translate": "🌐 Auto-Translate to Chinese",
+        "auto_translate_help": "Automatically translate Japanese subtitles to Traditional Chinese and align pairs",
+        "auto_translate_spinner": "🌐 Auto-translating to Chinese, please wait…",
+        "auto_translate_error_msg": "Translation failed",
+        "auto_translate_success_msg": "Successfully translated and generated {count} subtitle segments!",
+        "empty_ja_srt_error": "Japanese subtitle file is empty or contains no valid subtitle blocks.",
+        "vocab_vault_header": "📚 Vocabulary Vault",
+        "unit_words": "words",
+        "vocab_search_placeholder": "Search surface, base form, or meaning…",
+        "vocab_empty_hint": "No vocabulary saved yet.<br>Click any token in the subtitles to add!",
+        "vocab_base_form": "Base Form:",
+        "vocab_reading": "Reading:",
+        "vocab_context_sentence": "Context Sentence",
+        "vocab_delete_tooltip": "Delete '{word}'",
+        "vocab_deleted_toast": "Deleted from vocabulary: {word}",
+        "vocab_showing_count": "Showing first {shown} of {total} results",
+        "btn_clear_all_vocab": "🗑️ Clear All Vocabulary",
+        "clear_all_vocab_help": "Clear all words in Vocabulary Vault",
+        "clear_all_vocab_warning": "⚠️ Are you sure you want to clear all vocabulary? This action cannot be undone!",
+        "btn_confirm_clear": "⚠️ Confirm Clear",
+        "btn_cancel": "Cancel",
+        "vocab_cleared_toast": "All vocabulary cleared!",
+        "btn_export_anki": "⬇️  Export Anki (.tsv)",
+        "export_anki_help": "Download Anki import format (Tab-separated, UTF-8 BOM)",
+        "export_anki_disabled_help": "No vocabulary to export",
+        "export_anki_tip": "💡 Tip: The exported .tsv follows standard Anki format. Open Anki and click 'Import File' to generate your flashcard deck.",
+        "empty_welcome_title": "Welcome to BilingualSync",
+        "empty_welcome_desc": "Upload <strong>Japanese</strong> and <strong>Chinese</strong> subtitle files from the sidebar,<br>or transcribe directly from a video file to begin interactive learning.",
+        "feature1_title": "Smart Alignment",
+        "feature1_desc": "Sliding-window timestamp overlap<br>automatically matches bilingual pairs",
+        "feature2_title": "One-Click Vocabulary",
+        "feature2_desc": "Click any Japanese token<br>to parse base form, reading & POS",
+        "feature3_title": "Anki Export",
+        "feature3_desc": "Full sentence context<br>one-click TSV flashcard export",
+        "label_base": "Base",
+        "no_matching_zh": "(No matching Chinese subtitle)",
+        "toast_added_vocab": "Added to vocabulary: **{word}**",
+        "toast_save_failed": "Failed to save: {err}",
+    },
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Page config – MUST be first Streamlit call
 # ─────────────────────────────────────────────────────────────────────────────
+_curr_lang = st.session_state.get("ui_language", "繁體中文")
+_t_init = TRANSLATIONS.get(_curr_lang, TRANSLATIONS["繁體中文"])
+
 st.set_page_config(
-    page_title="BilingualSync",
+    page_title=_t_init["page_title"],
     page_icon="🎌",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        "About": "# BilingualSync\n雙語字幕驅動的日文單字學習系統",
+        "About": _t_init["about_app"],
     },
 )
 
@@ -69,7 +237,7 @@ def _inject_css() -> None:
 # Cached resource initialisation
 # ─────────────────────────────────────────────────────────────────────────────
 
-@st.cache_resource(show_spinner="⚙️  初始化資料庫連線…")
+@st.cache_resource(show_spinner="⚙️  Connecting to database…")
 def _init_db_connection():
     """
     Open a long-lived SQLite connection for the Streamlit process.
@@ -89,7 +257,7 @@ def _init_db_connection():
     return conn
 
 
-@st.cache_resource(show_spinner="🔬 載入日文形態素分析引擎…")
+@st.cache_resource(show_spinner="🔬 Loading Japanese morphological analyzer…")
 def _init_tokenizer():
     """Initialise Janome tokeniser once per process (heavy model load)."""
     from core.nlp.japanese_engine import JapaneseTokenizer
@@ -111,7 +279,7 @@ def _get_export_svc():
     return ExportService(repo=_get_repo())
 
 
-@st.cache_resource(show_spinner="🎙️ 初始化語音辨識與翻譯引擎…")
+@st.cache_resource(show_spinner="🎙️ Loading speech recognition & translation engine…")
 def _init_transcriber():
     """Instantiate AudioTranscriber once per Streamlit process lifetime.
 
@@ -185,11 +353,14 @@ def _parse_and_align(ja_bytes: bytes, zh_bytes: bytes) -> None:
     st.session_state.saved_surfaces = {e.surface_form for e in all_entries}
 
 
-def _parse_and_translate_ja(ja_bytes: bytes) -> None:
+def _parse_and_translate_ja(ja_bytes: bytes, t: dict[str, str] | None = None) -> None:
     """Parse pure Japanese SRT, automatically translate to Traditional Chinese, and store aligned pairs."""
     from core.aligner.srt_parser import SRTParser
     from core.base import AlignedPair
     from core.exceptions import SRTParseError
+
+    if t is None:
+        t = TRANSLATIONS.get(st.session_state.get("ui_language", "繁體中文"), TRANSLATIONS["繁體中文"])
 
     st.session_state.parse_error = None
     parser = SRTParser()
@@ -210,7 +381,7 @@ def _parse_and_translate_ja(ja_bytes: bytes) -> None:
             pass
 
     if not ja_blocks:
-        st.session_state.parse_error = "日文字幕檔案內容為空或無法解析有效的字幕區塊。"
+        st.session_state.parse_error = t["empty_ja_srt_error"]
         st.session_state.aligned_pairs = []
         return
 
@@ -240,19 +411,86 @@ def _build_anki_bytes() -> bytes:
     return Path(tmp_path).read_bytes()
 
 
+def _format_srt_timestamp(ms: int) -> str:
+    """Format millisecond integer into standard SRT timestamp HH:MM:SS,mmm."""
+    hours = ms // 3600000
+    rem = ms % 3600000
+    mins = rem // 60000
+    rem %= 60000
+    secs = rem // 1000
+    millis = rem % 1000
+    return f"{hours:02d}:{mins:02d}:{secs:02d},{millis:03d}"
+
+
+def _build_bilingual_srt_bytes(pairs: Sequence[Any]) -> bytes:
+    """Serialize aligned bilingual pairs into UTF-8 encoded SRT content."""
+    lines: list[str] = []
+    for idx, pair in enumerate(pairs, start=1):
+        src = pair.source
+        tgt = pair.target
+        start_ts = _format_srt_timestamp(src.start_ms)
+        end_ts = _format_srt_timestamp(src.end_ms)
+        lines.append(str(idx))
+        lines.append(f"{start_ts} --> {end_ts}")
+        lines.append(src.text)
+        if tgt and tgt.text.strip():
+            lines.append(tgt.text.strip())
+        lines.append("")
+    return "\n".join(lines).encode("utf-8")
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Part-of-speech display tokens & filter rules
+# ─────────────────────────────────────────────────────────────────────────────
+_SKIP_BUTTON_POS = frozenset({"助詞", "助動詞", "記号", "BOS/EOS", "接頭詞", "接尾"})
+
+# Backward-compatibility fallback POS style
+_POS_STYLE: dict[str, tuple[str, str, str]] = {
+    "動詞":     ("🔵", "#6C63FF", "Verb"),
+    "名詞":     ("🟢", "#00CEC9", "Noun"),
+    "形容詞":   ("🟡", "#FDCB6E", "Adj"),
+    "形容動詞": ("🟠", "#E17055", "Na-Adj"),
+    "副詞":     ("🔴", "#FF7675", "Adv"),
+}
+
+def _get_pos_style(t: dict[str, str]) -> dict[str, tuple[str, str, str]]:
+    """Return POS mapping with localized English / Traditional Chinese label."""
+    return {
+        "動詞":     ("🔵", "#6C63FF", t["pos_verb"]),
+        "名詞":     ("🟢", "#00CEC9", t["pos_noun"]),
+        "形容詞":   ("🟡", "#FDCB6E", t["pos_adj"]),
+        "形容動詞": ("🟠", "#E17055", t["pos_na_adj"]),
+        "副詞":     ("🔴", "#FF7675", t["pos_adv"]),
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar renderer
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_sidebar() -> None:
+def _render_sidebar() -> dict[str, str]:
     with st.sidebar:
+        # ── Language selector at the very top ─────────────────────────────
+        curr_lang = st.session_state.get("ui_language", "繁體中文")
+        lang_choice = st.selectbox(
+            label="🌐 Language / 語言",
+            options=["繁體中文", "English"],
+            index=0 if curr_lang == "繁體中文" else 1,
+            key="ui_language",
+        )
+        t = TRANSLATIONS[lang_choice]
+        pos_style = _get_pos_style(t)
+
+        st.divider()
+
         # ── Brand header ──────────────────────────────────────────────────
         st.markdown(
-            """
-            <div style="text-align:center; padding: 0.5rem 0 1.2rem;">
+            f"""
+            <div style="text-align:center; padding: 0.2rem 0 0.8rem;">
                 <div style="font-size:2.2rem;">🎌</div>
                 <div style="font-size:1.25rem; font-weight:700; color:#A29BFE;">BilingualSync</div>
-                <div style="font-size:0.72rem; color:#5a6078; letter-spacing:1px;">BILINGUAL SUBTITLE LEARNING</div>
+                <div style="font-size:0.72rem; color:#5a6078; letter-spacing:1px;">{t["brand_subtitle"]}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -260,26 +498,30 @@ def _render_sidebar() -> None:
         st.divider()
 
         # ── Video ASR Section ─────────────────────────────────────────────
-        with st.expander("🎬 影片自動生成雙語字幕", expanded=True):
-            st.caption("🎧 透過離線語音聽打與機器翻譯，直接產出雙語字幕")
+        with st.expander(t["sidebar_header"], expanded=True):
+            st.caption(f"🎧 {t['video_asr_caption']}")
             media_file = st.file_uploader(
-                "選擇影片/音訊檔",
+                t["upload_label"],
                 type=["mp4", "mkv", "mov", "mp3", "wav"],
                 key="media_uploader",
-                help="支援常見格式：.mp4, .mkv, .mov, .mp3, .wav",
+                help=t["upload_help"],
             )
+            def _format_model_opt(opt: str) -> str:
+                return f"{opt} ({t['model_opt_high'] if opt == 'medium' else t['model_opt_fast']})"
+
             model_opt = st.selectbox(
-                "Whisper 模型精度",
-                options=["medium (高精確度)", "small (較快)"],
+                t["model_select_label"],
+                options=["medium", "small"],
+                format_func=_format_model_opt,
                 index=0,
                 key="whisper_model_select",
-                help="medium 模型具備最高日語識別率 (建議)；small 模型運算較快",
+                help=t["model_select_help"],
             )
-            asr_model_size = "medium" if "medium" in model_opt else "small"
+            asr_model_size = model_opt
 
             transcribe_disabled = (media_file is None)
             if st.button(
-                "🚀 開始深度辨識與翻譯",
+                t["btn_start_transcribe"],
                 disabled=transcribe_disabled,
                 use_container_width=True,
                 type="primary",
@@ -291,35 +533,47 @@ def _render_sidebar() -> None:
                     tmp_media_path = tmp_media.name
 
                 try:
-                    with st.spinner("🎧 Phase 1：Whisper 日文 ASR 辨識中… Phase 2：批次繁中翻譯中（請查看終端機進度）"):
-                        print("[INFO] 接收到上傳檔案，開始處理...", flush=True)
+                    with st.status(t["transcribing"], expanded=True) as status_box:
+                        def on_progress(msg: str):
+                            status_box.write(msg)
+                            status_box.update(label=msg)
+
+                        status_box.write(t["extracting_audio"])
+                        status_box.write(t["transcribing"])
                         transcriber = _init_transcriber()
                         pairs = transcriber.transcribe_and_translate(
                             media_path=tmp_media_path,
                             model_size=asr_model_size,
                             language="ja",
-                            # beam_size / VAD / initial_prompt use optimised defaults
+                            progress_callback=on_progress,
                         )
 
-                    if not pairs:
-                        st.warning("⚠️ 語音中未識別出有效語句，請確認音訊是否包含清楚日語。")
-                    else:
-                        from core.base import AlignedPair
-                        aligned = [
-                            AlignedPair(source=ja_b, target=zh_b, overlap_ratio=1.0)
-                            for ja_b, zh_b in pairs
-                        ]
-                        st.session_state.aligned_pairs = aligned
+                        if not pairs:
+                            status_box.update(label=t["warn_no_speech"], state="error")
+                            st.warning(f"⚠️ {t['warn_no_speech']}")
+                        else:
+                            from core.base import AlignedPair
+                            aligned = [
+                                AlignedPair(source=ja_b, target=zh_b, overlap_ratio=1.0)
+                                for ja_b, zh_b in pairs
+                            ]
+                            st.session_state.aligned_pairs = aligned
 
-                        # Refresh saved surfaces from DB
-                        repo = _get_repo()
-                        all_entries = repo.list_all(source_lang="ja", limit=10_000)
-                        st.session_state.saved_surfaces = {e.surface_form for e in all_entries}
-                        st.session_state.parse_error = None
-                        st.success(f"✅ 成功辨識並生成 {len(aligned)} 個雙語句對！")
-                        st.rerun()
+                            # Refresh saved surfaces from DB
+                            repo = _get_repo()
+                            all_entries = repo.list_all(source_lang="ja", limit=10_000)
+                            st.session_state.saved_surfaces = {e.surface_form for e in all_entries}
+                            st.session_state.parse_error = None
+                            complete_msg = t["transcribe_complete"].format(count=len(aligned))
+                            status_box.update(
+                                label=complete_msg,
+                                state="complete",
+                                expanded=False,
+                            )
+                            st.success(f"✅ {complete_msg}")
+                            st.rerun()
                 except Exception as exc:
-                    st.error(f"辨識處理失敗：{exc}")
+                    st.error(f"{t['err_transcribe']}: {exc}")
                     logger.exception("Failed during ASR transcription: %s", exc)
                 finally:
                     try:
@@ -328,74 +582,75 @@ def _render_sidebar() -> None:
                         pass
 
         # ── SRT Upload Section ────────────────────────────────────────────
-        with st.expander("📂 既有雙語 SRT 字幕上傳", expanded=False):
+        with st.expander(t["srt_section_header"], expanded=False):
             ja_file = st.file_uploader(
-                "🇯🇵 日文字幕 (.srt)",
+                t["ja_sub_label"],
                 type=["srt"],
                 key="ja_uploader",
-                help="上傳日文原版字幕檔（.srt 格式）",
+                help=t["ja_sub_help"],
             )
             zh_file = st.file_uploader(
-                "🇹🇼 中文字幕 (.srt)",
+                t["zh_sub_label"],
                 type=["srt"],
                 key="zh_uploader",
-                help="上傳中文翻譯字幕檔（.srt 格式）",
+                help=t["zh_sub_help"],
             )
 
             parse_disabled = not (ja_file and zh_file)
             if st.button(
-                "🔍 解析並對齊字幕",
+                t["btn_parse_align"],
                 disabled=parse_disabled,
                 use_container_width=True,
                 type="secondary",
                 key="btn_srt_parse",
             ):
-                with st.spinner("解析字幕中，請稍候…"):
+                with st.spinner(t["parse_spinner"]):
                     _parse_and_align(ja_file.read(), zh_file.read())
                 if st.session_state.parse_error:
-                    st.error(f"解析失敗：{st.session_state.parse_error}")
+                    st.error(f"{t['parse_error_msg']}: {st.session_state.parse_error}")
                 else:
                     n = len(st.session_state.aligned_pairs)
-                    st.success(f"✅ 成功對齊 {n} 個字幕句對！")
+                    st.success(f"✅ {t['parse_success_msg'].format(count=n)}")
                     st.rerun()
 
             translate_disabled = (ja_file is None)
             if st.button(
-                "🌐 自動翻譯繁中 (純日文 SRT)",
+                t["btn_auto_translate"],
                 disabled=translate_disabled,
                 use_container_width=True,
                 type="primary" if (ja_file and not zh_file) else "secondary",
                 key="btn_ja_auto_translate",
-                help="若僅有日文字幕檔，一鍵自動逐句翻譯為繁體中文並對齊雙語字幕",
+                help=t["auto_translate_help"],
             ):
-                with st.spinner("🌐 正在自動翻譯繁體中文，請稍候…"):
-                    _parse_and_translate_ja(ja_file.read())
+                with st.spinner(t["auto_translate_spinner"]):
+                    _parse_and_translate_ja(ja_file.read(), t=t)
                 if st.session_state.parse_error:
-                    st.error(f"翻譯失敗：{st.session_state.parse_error}")
+                    st.error(f"{t['auto_translate_error_msg']}: {st.session_state.parse_error}")
                 else:
                     n = len(st.session_state.aligned_pairs)
-                    st.success(f"✅ 成功翻譯並生成 {n} 個繁中對應字幕句對！")
+                    st.success(f"✅ {t['auto_translate_success_msg'].format(count=n)}")
                     st.rerun()
 
         st.divider()
 
         # ── Vocabulary Vault ──────────────────────────────────────────────
-        st.markdown('<div class="section-header">📚 Vocabulary Vault</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-header">{t["vocab_vault_header"]}</div>', unsafe_allow_html=True)
 
         vocab_svc = _get_vocab_svc()
         word_count = vocab_svc.get_word_count()
 
+        word_unit = "word" if (word_count == 1 and lang_choice == "English") else t["unit_words"]
         st.markdown(
             f'<div style="margin-bottom:0.8rem;">'
-            f'<span class="stat-badge">📖 {word_count} 個單字</span>'
+            f'<span class="stat-badge">📖 {word_count} {word_unit}</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
 
         # Search box
         search_q = st.text_input(
-            "🔎 搜尋單字",
-            placeholder="輸入詞彙、原形或翻譯…",
+            "Search Vocabulary",
+            placeholder=t["vocab_search_placeholder"],
             key="vocab_search_input",
             label_visibility="collapsed",
         )
@@ -403,9 +658,7 @@ def _render_sidebar() -> None:
         # Word list
         if word_count == 0:
             st.markdown(
-                '<div style="color:#5a6078; font-size:0.82rem; padding:0.5rem 0;">'
-                '尚未收錄任何單字。<br>點擊日文字幕中的詞彙即可加入！'
-                '</div>',
+                f'<div style="color:#5a6078; font-size:0.82rem; padding:0.5rem 0;">{t["vocab_empty_hint"]}</div>',
                 unsafe_allow_html=True,
             )
         else:
@@ -418,7 +671,9 @@ def _render_sidebar() -> None:
                 surf_esc = html.escape(entry.surface_form)
                 base_esc = html.escape(entry.base_form) if entry.base_form else "–"
                 reading_esc = html.escape(entry.reading) if entry.reading else "–"
-                pos_esc = html.escape(entry.part_of_speech) if entry.part_of_speech else ""
+                pos_info = pos_style.get(entry.part_of_speech)
+                pos_display = pos_info[2] if pos_info else (entry.part_of_speech or "")
+                pos_esc = html.escape(pos_display)
 
                 ex_html = ""
                 if ex_src:
@@ -426,7 +681,7 @@ def _render_sidebar() -> None:
                     ex_tgt_html = f'<div class="vocab-ex-tgt">🇹🇼 {html.escape(ex_tgt)}</div>' if ex_tgt else ""
                     ex_html = (
                         f'<div class="vocab-card-section">'
-                        f'<div class="vocab-card-label">所屬例句</div>'
+                        f'<div class="vocab-card-label">{t["vocab_context_sentence"]}</div>'
                         f'<div class="vocab-ex-src">🇯🇵 {ex_src_esc}</div>'
                         f'{ex_tgt_html}'
                         f'</div>'
@@ -445,20 +700,21 @@ def _render_sidebar() -> None:
                             unsafe_allow_html=True,
                         )
                     with c_del:
-                        if st.button("✕", key=f"del_vocab_{entry.id}", help=f"刪除「{entry.surface_form}」"):
+                        del_help = t["vocab_delete_tooltip"].format(word=entry.surface_form)
+                        if st.button("✕", key=f"del_vocab_{entry.id}", help=del_help):
                             vocab_svc.delete_word(entry.id)
                             st.session_state.saved_surfaces.discard(entry.surface_form)
-                            st.toast(f"🗑️ 已從單字庫刪除：{entry.surface_form}", icon="✅")
+                            st.toast(f"🗑️ {t['vocab_deleted_toast'].format(word=entry.surface_form)}", icon="✅")
                             st.rerun()
 
                     st.markdown(
                         f'<div class="vocab-card-body">'
                         f'  <div class="vocab-meta-row">'
-                        f'    <span class="vocab-card-label">原型：</span>'
+                        f'    <span class="vocab-card-label">{t["vocab_base_form"]}</span>'
                         f'    <span class="vocab-card-val">{base_esc}</span>'
                         f'  </div>'
                         f'  <div class="vocab-meta-row">'
-                        f'    <span class="vocab-card-label">讀音（片假名）：</span>'
+                        f'    <span class="vocab-card-label">{t["vocab_reading"]}</span>'
                         f'    <span class="vocab-card-val reading">{reading_esc}</span>'
                         f'  </div>'
                         f'</div>'
@@ -467,26 +723,26 @@ def _render_sidebar() -> None:
                     )
 
             if len(results) > 50:
-                st.caption(f"顯示前 50 筆，共 {len(results)} 筆結果")
+                st.caption(t["vocab_showing_count"].format(shown=50, total=len(results)))
 
             # ── Clear All Words Button ─────────────────────────────────────────
             st.markdown('<div style="height:0.3rem;"></div>', unsafe_allow_html=True)
             if not st.session_state.get("confirm_clear_vocab", False):
-                if st.button("🗑️ 清空所有單字", use_container_width=True, help="清空單字庫內所有單字"):
+                if st.button(t["btn_clear_all_vocab"], use_container_width=True, help=t["clear_all_vocab_help"]):
                     st.session_state.confirm_clear_vocab = True
                     st.rerun()
             else:
-                st.warning("⚠️ 確定要清空所有單字嗎？此動作無法復原！")
+                st.warning(t["clear_all_vocab_warning"])
                 col_yes, col_no = st.columns(2)
                 with col_yes:
-                    if st.button("⚠️ 確認清空", type="primary", use_container_width=True):
+                    if st.button(t["btn_confirm_clear"], type="primary", use_container_width=True):
                         vocab_svc.delete_all_words()
                         st.session_state.saved_surfaces.clear()
                         st.session_state.confirm_clear_vocab = False
-                        st.toast("🗑️ 已清空所有單字庫資料！", icon="✅")
+                        st.toast(f"🗑️ {t['vocab_cleared_toast']}", icon="✅")
                         st.rerun()
                 with col_no:
-                    if st.button("取消", use_container_width=True):
+                    if st.button(t["btn_cancel"], use_container_width=True):
                         st.session_state.confirm_clear_vocab = False
                         st.rerun()
 
@@ -496,58 +752,62 @@ def _render_sidebar() -> None:
         if word_count > 0:
             anki_bytes = _build_anki_bytes()
             st.download_button(
-                label="⬇️  匯出 Anki (.tsv)",
+                label=f"⬇️  {t['btn_export_vocab']} (.tsv)",
                 data=anki_bytes,
                 file_name="bilingual_sync_anki.tsv",
                 mime="text/tab-separated-values",
                 use_container_width=True,
-                help="下載 Anki 匯入格式（Tab 分隔，UTF-8 BOM）",
+                help=t["export_anki_help"],
+                key="btn_download_anki_vocab",
             )
         else:
             st.button(
-                "⬇️  匯出 Anki (.tsv)",
+                f"⬇️  {t['btn_export_vocab']} (.tsv)",
                 disabled=True,
                 use_container_width=True,
-                help="尚無單字可匯出",
+                help=t["export_anki_disabled_help"],
+                key="btn_download_anki_vocab_disabled",
             )
 
         st.markdown(
-            '<div style="font-size:0.75rem; color:#8892a0; margin-top:0.45rem; line-height:1.45;">'
-            '💡 提示：匯出的 .tsv 檔符合 Anki 欄位標準，開啟 Anki 點選「匯入檔案」即可直接生成單字牌組。'
-            '</div>',
+            f'<div style="font-size:0.75rem; color:#8892a0; margin-top:0.45rem; line-height:1.45;">'
+            f'{t["export_anki_tip"]}'
+            f'</div>',
             unsafe_allow_html=True,
         )
+
+    return t
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main area: Empty State
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_empty_state() -> None:
+def _render_empty_state(t: dict[str, str]) -> None:
     st.markdown(
-        """
+        f"""
         <div class="empty-state">
             <div class="icon">🎬</div>
-            <h3>歡迎使用 BilingualSync</h3>
-            <p>請在左側側邊欄上傳<strong>日文</strong>與<strong>中文</strong>字幕檔，<br>
-               點擊「解析並對齊字幕」後即可開始互動學習。</p>
+            <h3>{t["empty_welcome_title"]}</h3>
+            <p>{t["empty_welcome_desc"]}</p>
+            <div style="font-size:0.85rem; color:#8892a0; margin-top:0.6rem;">{t["no_data_hint"]}</div>
         </div>
 
         <div style="display:flex; gap:1rem; margin-top:2rem; justify-content:center; flex-wrap:wrap;">
             <div class="glass-card" style="min-width:200px; text-align:center; flex:1;">
                 <div style="font-size:1.8rem; margin-bottom:0.4rem;">🔍</div>
-                <div style="font-weight:600; color:#A29BFE;">智慧字幕對齊</div>
-                <div style="font-size:0.8rem; color:#5a6078; margin-top:0.3rem;">滑動視窗時間戳重疊演算法<br>自動匹配雙語句對</div>
+                <div style="font-weight:600; color:#A29BFE;">{t["feature1_title"]}</div>
+                <div style="font-size:0.8rem; color:#5a6078; margin-top:0.3rem;">{t["feature1_desc"]}</div>
             </div>
             <div class="glass-card" style="min-width:200px; text-align:center; flex:1;">
                 <div style="font-size:1.8rem; margin-bottom:0.4rem;">🎯</div>
-                <div style="font-weight:600; color:#A29BFE;">一鍵加入單字庫</div>
-                <div style="font-size:0.8rem; color:#5a6078; margin-top:0.3rem;">點擊任意日文詞彙<br>自動解析原形、讀音與詞性</div>
+                <div style="font-weight:600; color:#A29BFE;">{t["feature2_title"]}</div>
+                <div style="font-size:0.8rem; color:#5a6078; margin-top:0.3rem;">{t["feature2_desc"]}</div>
             </div>
             <div class="glass-card" style="min-width:200px; text-align:center; flex:1;">
                 <div style="font-size:1.8rem; margin-bottom:0.4rem;">📤</div>
-                <div style="font-weight:600; color:#A29BFE;">Anki 匯出</div>
-                <div style="font-size:0.8rem; color:#5a6078; margin-top:0.3rem;">完整例句上下文<br>一鍵匯出 TSV 單字卡</div>
+                <div style="font-weight:600; color:#A29BFE;">{t["feature3_title"]}</div>
+                <div style="font-size:0.8rem; color:#5a6078; margin-top:0.3rem;">{t["feature3_desc"]}</div>
             </div>
         </div>
         """,
@@ -559,52 +819,55 @@ def _render_empty_state() -> None:
 # Main area: Bilingual Reader
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Part-of-speech display rules
-_POS_STYLE = {
-    "動詞":    ("🔵", "#6C63FF"),   # verb  – purple
-    "名詞":    ("🟢", "#00CEC9"),   # noun  – teal
-    "形容詞":  ("🟡", "#FDCB6E"),   # i-adj – yellow
-    "形容動詞":("🟠", "#E17055"),   # na-adj – orange
-    "副詞":    ("🔴", "#FF7675"),   # adverb – red
-}
-# POS tags we don't want as clickable buttons (grammatical particles etc.)
-_SKIP_BUTTON_POS = frozenset({"助詞", "助動詞", "記号", "BOS/EOS", "接頭詞", "接尾"})
-
-
-def _render_reader() -> None:
+def _render_reader(t: dict[str, str]) -> None:
     pairs = st.session_state.aligned_pairs
     tokenizer = _init_tokenizer()
     vocab_svc = _get_vocab_svc()
+    pos_style = _get_pos_style(t)
 
     # Header
     n_pairs = len(pairs)
     n_matched = sum(1 for p in pairs if p.target is not None)
-    col_h1, col_h2 = st.columns([3, 1])
+    col_h1, col_h2 = st.columns([2.8, 1.2])
     with col_h1:
         st.markdown(
-            '<div style="font-size:1.4rem; font-weight:700; color:#A29BFE; margin-bottom:0.3rem;">'
-            '🎬 雙語字幕對照閱讀器'
-            '</div>',
+            f'<div style="font-size:1.4rem; font-weight:700; color:#A29BFE; margin-bottom:0.3rem;">'
+            f'{t["title"]}'
+            f'</div>',
             unsafe_allow_html=True,
         )
     with col_h2:
         st.markdown(
             f'<div style="text-align:right; padding-top:0.3rem;">'
-            f'<span class="stat-badge">📝 {n_matched}/{n_pairs} 句</span>'
+            f'<span class="stat-badge">📝 {n_matched}/{n_pairs} {t["unit_segments"]}</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
 
-    st.markdown(
-        '<div style="font-size:0.78rem; color:#5a6078; margin-bottom:1rem;">'
-        '💡 點擊日文詞彙即可加入單字庫・顏色代表詞性：'
-        '🔵動詞 🟢名詞 🟡形容詞 🟠形容動詞 🔴副詞'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    # Subtitle action toolbar (Legend & Export SRT)
+    col_tb1, col_tb2 = st.columns([3, 1])
+    with col_tb1:
+        st.markdown(
+            f'<div style="font-size:0.78rem; color:#5a6078; padding-top:0.3rem;">'
+            f'💡 {t["legend_tip"]} '
+            f'🔵{t["pos_verb"]} 🟢{t["pos_noun"]} 🟡{t["pos_adj"]} 🟠{t["pos_na_adj"]} 🔴{t["pos_adv"]}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    with col_tb2:
+        st.download_button(
+            label=f"📥 {t['btn_export_srt']}",
+            data=_build_bilingual_srt_bytes(pairs),
+            file_name="bilingual_subtitles.srt",
+            mime="text/plain",
+            use_container_width=True,
+            key="btn_download_bilingual_srt",
+        )
+
+    st.markdown('<div style="margin-bottom:0.8rem;"></div>', unsafe_allow_html=True)
 
     # Render each sentence pair
-    for pair in pairs:
+    for pair_idx, pair in enumerate(pairs, start=1):
         src = pair.source
         tgt = pair.target
 
@@ -618,9 +881,12 @@ def _render_reader() -> None:
             with col_ja:
                 with st.container(border=True):
                     st.markdown(
-                        f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:0.35rem;">'
+                        f'<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.35rem;">'
+                        f'<div style="display:flex; align-items:center; gap:8px;">'
                         f'<span class="subtitle-index">#{src.index}</span>'
                         f'<span class="ts-chip">{ts_start}→{ts_end}</span>'
+                        f'</div>'
+                        f'<span class="ts-chip" style="opacity:0.75; font-size:0.7rem;">{pair_idx}/{n_pairs} {t["unit_segments"]}</span>'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
@@ -649,7 +915,7 @@ def _render_reader() -> None:
                                     surf = tok.surface
                                     base = tok.base_form
                                     pos = tok.part_of_speech
-                                    emoji, color = _POS_STYLE.get(pos, ("⚪", "#8892a0"))
+                                    emoji, color, pos_label = pos_style.get(pos, ("⚪", "#8892a0", pos))
                                     is_saved = surf in st.session_state.saved_surfaces
                                     btn_label = f"{'✓ ' if is_saved else ''}{surf}"
                                     btn_key = f"{key_prefix}_{btn_idx}"
@@ -657,7 +923,7 @@ def _render_reader() -> None:
                                     if st.button(
                                         btn_label,
                                         key=btn_key,
-                                        help=f"{emoji} {pos}  |  原形：{base}",
+                                        help=f"{emoji} {pos_label}  |  {t['label_base']}: {base}",
                                         type=btn_type,
                                         use_container_width=False,
                                     ):
@@ -668,6 +934,7 @@ def _render_reader() -> None:
                                             src_start_ms=src.start_ms,
                                             src_end_ms=src.end_ms,
                                             vocab_svc=vocab_svc,
+                                            t=t,
                                         )
 
                         # Render full sentence as readable text below buttons
@@ -697,10 +964,10 @@ def _render_reader() -> None:
                         )
                     else:
                         st.markdown(
-                            '<div style="display:flex; align-items:center; gap:8px; margin-bottom:0.35rem; opacity:0.35;">'
-                            '<span class="subtitle-index">–</span>'
-                            '</div>'
-                            '<div class="zh-text" style="opacity:0.35; margin-top:0.35rem;">（無對應中文字幕）</div>',
+                            f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:0.35rem; opacity:0.35;">'
+                            f'<span class="subtitle-index">–</span>'
+                            f'</div>'
+                            f'<div class="zh-text" style="opacity:0.35; margin-top:0.35rem;">{t["no_matching_zh"]}</div>',
                             unsafe_allow_html=True,
                         )
 
@@ -716,6 +983,7 @@ def _on_word_click(
     src_start_ms: int,
     src_end_ms: int,
     vocab_svc,
+    t: dict[str, str],
 ) -> None:
     """Save clicked word to DB and show toast notification."""
     try:
@@ -730,10 +998,11 @@ def _on_word_click(
         reading = f"【{entry.reading}】" if entry.reading else ""
         base    = entry.base_form if entry.base_form != surface else ""
         detail  = f"{reading} {base}".strip()
-        st.toast(f"✅ 加入單字庫：**{surface}**{' → ' + detail if detail else ''}", icon="🎌")
+        toast_msg = t["toast_added_vocab"].format(word=surface)
+        st.toast(f"✅ {toast_msg}{' → ' + detail if detail else ''}", icon="🎌")
         st.rerun()
     except Exception as exc:
-        st.toast(f"⚠️ 儲存失敗：{exc}", icon="❌")
+        st.toast(f"⚠️ {t['toast_save_failed'].format(err=exc)}", icon="❌")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -749,8 +1018,8 @@ def main() -> None:
     _init_tokenizer()
     _init_transcriber()
 
-    # Sidebar
-    _render_sidebar()
+    # Sidebar (selects language and returns translation dictionary `t`)
+    t = _render_sidebar()
 
     # Main content
     st.markdown(
@@ -759,9 +1028,9 @@ def main() -> None:
     )
 
     if not st.session_state.aligned_pairs:
-        _render_empty_state()
+        _render_empty_state(t)
     else:
-        _render_reader()
+        _render_reader(t)
 
 
 if __name__ == "__main__":
